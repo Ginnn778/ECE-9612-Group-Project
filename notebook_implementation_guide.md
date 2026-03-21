@@ -57,7 +57,7 @@
 ### 4.1 Technical Preliminaries
 
 **当前状态：** 已有库导入。  
-**补充：** 确认导入 `lightgbm`、`xgboost`、`scipy.sparse`。
+**补充：** 确认导入所有候选模型库：`lightgbm`、`xgboost`、`sklearn.ensemble`、`scipy.sparse`（视 7.2.1 对比结果按需保留）。
 
 ### 4.2 Data Loading
 
@@ -234,7 +234,7 @@ df["price_log"] = np.log1p(df["price"].fillna(0))
 | 3 | Random Forest | RandomizedSearchCV (3-fold, n_iter=10) | `n_estimators ∈ [100,300]`，`max_depth ∈ [10,20,None]`，`min_samples_leaf ∈ [1,5]` |
 | 4 | Gradient Boosting (sklearn) | 手动对比 | `n_estimators ∈ [100,300]`，`lr ∈ [0.05,0.1]`，`max_depth ∈ [4,6]` |
 | 5 | XGBoost | 手动对比 | `n_estimators=200`，`max_depth ∈ [4,6]`，`lr=0.05` |
-| 6 | **LightGBM** | 手动网格 | `num_leaves ∈ [31,63,127]`，`n_estimators ∈ [200,500]`，`lr ∈ [0.05,0.1]` |
+| 6 | LightGBM | 手动网格 | `num_leaves ∈ [31,63,127]`，`n_estimators ∈ [200,500]`，`lr ∈ [0.05,0.1]` |
 | 7 | LightGBM + TF-IDF | 继承最优参数 | 同 #6 最优参数 + TF-IDF `max_features=3000` |
 
 **统一实验条件：**
@@ -275,7 +275,7 @@ def evaluate(name, model, X_tr, y_tr, X_te, y_te_raw):
 | Random Forest | depth=?, n=? | — | — | — |
 | Gradient Boosting | lr=?, n=? | — | — | — |
 | XGBoost | depth=?, n=? | — | — | — |
-| **LightGBM** | leaves=?, n=? | **—** | **—** | **—** |
+| LightGBM | leaves=?, n=? | — | — | — |
 | LightGBM + TF-IDF | 同上 | — | — | — |
 
 **决策规则：**
@@ -283,25 +283,25 @@ def evaluate(name, model, X_tr, y_tr, X_te, y_te_raw):
 - 若两模型 MAE 差距 < 0.005，优先选训练速度更快的
 - Random Forest / GBM 若内存超限，记录原因后排除
 
-> 💡 根据 `Modeling_Decision_Analysis.ipynb` 预实验，预期 LightGBM 综合最优，但需在此处完整运行以提供学术支撑。
+> 💡 7.2.1 实验完成后，在结果表中**加粗标注最终选定的模型**，并在下方写一段选型说明（为什么选这个，其余模型差在哪里）。
 
 ---
 
 #### 7.2.2 两阶段 Pipeline 实现
 
+> ⚠️ **模型待定**：Stage 1（分类器）和 Stage 2（回归器）的具体模型类型，**以 7.2.1 对比实验的结果为准**，选取各自任务中 MAE / F1 最优的模型填入。下方代码以伪代码形式表示 Pipeline 结构，`BestClassifier` 和 `BestRegressor` 为占位符。
+
 **Stage 1：二分类器（votes_up > 0？）**
 
 ```python
-from lightgbm import LGBMClassifier
+# 候选：LGBMClassifier / XGBClassifier / RandomForestClassifier / LogisticRegression
+# 选取在验证集上加权 F1 最高的模型
+# 正样本率仅 12.7%，所有模型均需设置类别权重或 class_weight='balanced'
 
-# 正样本率 12.7% → class_weight='balanced' 处理不平衡
-clf = LGBMClassifier(
-    n_estimators=300,
-    num_leaves=63,
-    learning_rate=0.05,
-    class_weight="balanced",
+clf = BestClassifier(
+    # 超参数来自 7.2.1 对比实验中 Stage 1 的最优配置
+    class_weight="balanced",   # 或 scale_pos_weight（XGBoost）
     random_state=42,
-    verbose=-1
 )
 clf.fit(X_train, y_cls_train)   # y_cls = (votes_up > 0).astype(int)
 
@@ -311,22 +311,20 @@ clf.fit(X_train, y_cls_train)   # y_cls = (votes_up > 0).astype(int)
 **Stage 2：回归器（仅在 votes_up > 0 子集上训练）**
 
 ```python
-from lightgbm import LGBMRegressor
+# 候选：LGBMRegressor / XGBRegressor / RandomForestRegressor / Ridge
+# 选取在 votes_up > 0 子集验证集上 MAE（原始尺度）最低的模型
 
 mask_train = y_train_raw > 0
-reg = LGBMRegressor(
-    n_estimators=300,
-    num_leaves=63,
-    learning_rate=0.05,
+reg = BestRegressor(
+    # 超参数来自 7.2.1 对比实验中 Stage 2 的最优配置
     random_state=42,
-    verbose=-1
 )
 reg.fit(X_train[mask_train], np.log1p(y_train_raw[mask_train]))
 
 # Stage 2 评估：MAE（原始尺度，expm1 反变换）
 ```
 
-**完整 Pipeline 推理函数：**
+**完整 Pipeline 推理函数（与具体模型类型无关）：**
 
 ```python
 def two_stage_predict(X, clf, reg, threshold=0.5):
@@ -339,7 +337,7 @@ def two_stage_predict(X, clf, reg, threshold=0.5):
 
 y_pred = two_stage_predict(X_test, clf, reg)
 print(f"Two-Stage Pipeline MAE: {mean_absolute_error(y_test_raw, y_pred):.4f}")
-print(f"Baseline (single LightGBM) MAE: ~0.52")
+print(f"Baseline (single best model) MAE: ~0.52")
 ```
 
 ---
@@ -354,10 +352,10 @@ print(f"Baseline (single LightGBM) MAE: ~0.52")
 | Ablation 4 | 两阶段 vs 单模型 | Pipeline vs 直接回归 | 验证两阶段方案的有效性 |
 
 ```python
-# Ablation 1 示例
+# Ablation 1 示例（以最优分类器为准）
 for threshold in [0, 3, 10]:
     y_cls = (y_raw > threshold).astype(int)
-    clf_tmp = LGBMClassifier(class_weight="balanced", ...)
+    clf_tmp = BestClassifier(class_weight="balanced", ...)
     clf_tmp.fit(X_train, y_cls[train_idx])
     y_pred_tmp = two_stage_predict(X_test, clf_tmp, reg)
     print(f"Threshold={threshold}: MAE={mean_absolute_error(y_test_raw, y_pred_tmp):.4f}")
@@ -385,8 +383,8 @@ for threshold in [0, 3, 10]:
 
 | 比较路径 | 方法 | 端到端 MAE |
 |---|---|---|
-| 路径 1（单模型基线） | LightGBM 直接回归 + log1p | ~0.52（已有） |
-| 路径 2（主方案） | 两阶段 LightGBM Pipeline | 待实验 |
+| 路径 1（单模型基线） | 最优单模型直接回归 + log1p（来自 7.2.1） | ~0.52（已有） |
+| 路径 2（主方案） | 两阶段 Pipeline（最优分类器 + 最优回归器） | 待实验 |
 | 路径 3（消融对照） | 路径 2 + 移除 `weighted_vote_score` | 待实验 |
 | 路径 4（阈值对照） | 路径 2 + threshold=3 | 待实验 |
 
@@ -398,8 +396,8 @@ for threshold in [0, 3, 10]:
 
 | 方案 | 端到端 MAE | 相对基线提升 | 备注 |
 |---|---|---|---|
-| 单模型 LightGBM（基线） | 0.52 | — | Modeling_Decision_Analysis Section 9 |
-| 两阶段 Pipeline（主方案） | — | — | |
+| 单模型最优（基线，来自 7.2.1） | — | — | 实验后填入模型名称及参数 |
+| 两阶段 Pipeline（主方案） | — | — | 分类器 + 回归器模型名称待定 |
 | + 移除 weighted_vote_score | — | — | 泄漏验证 |
 | + threshold=3 | — | — | 阈值消融 |
 
