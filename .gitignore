@@ -1,2 +1,2 @@
-# Large data files
-big_reviews.csv
+# Large data files — ignore all CSV files
+*.csv
